@@ -248,7 +248,7 @@ func TestWriteFiles_RejectsUnsafePathsBeforeCreatingOutput(t *testing.T) {
 	for _, filePath := range []string{"../outside.yaml", "/absolute.yaml", `folder\outside.yaml`, "", "./sample.yaml", "folder/../sample.yaml"} {
 		t.Run(filePath, func(t *testing.T) {
 			directory := filepath.Join(t.TempDir(), "export")
-			err := writeFiles(context.Background(), directory, []SerializedFile{{Path: filePath}}, writeOptions{})
+			_, err := writeFiles(context.Background(), directory, []SerializedFile{{Path: filePath}}, writeOptions{})
 			require.ErrorContains(t, err, "invalid export path")
 			assert.NoDirExists(t, directory)
 		})
@@ -264,7 +264,8 @@ func TestWriteFiles_RejectsSymlinkEscapeBeforeWriting(t *testing.T) {
 		{Path: "first.yaml", Data: []byte("first\n")},
 		{Path: "platform-shared/escaped.yaml", Data: []byte("outside\n")},
 	}
-	require.Error(t, writeFiles(context.Background(), directory, files, writeOptions{}))
+	_, err := writeFiles(context.Background(), directory, files, writeOptions{})
+	require.Error(t, err)
 	assert.NoFileExists(t, filepath.Join(directory, "first.yaml"))
 	assert.NoFileExists(t, filepath.Join(outside, "escaped.yaml"))
 }
@@ -278,7 +279,7 @@ func TestWriteFiles_RejectsExistingDirectoryOrSymlink(t *testing.T) {
 		} else if err := os.Symlink("missing.yaml", conflict); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
-		err := writeFiles(context.Background(), directory, []SerializedFile{{Path: "manifest.yaml"}}, writeOptions{})
+		_, err := writeFiles(context.Background(), directory, []SerializedFile{{Path: "manifest.yaml"}}, writeOptions{})
 		require.ErrorContains(t, err, "already exists")
 	}
 }
@@ -287,7 +288,7 @@ func TestWriteFiles_PreservesUnmanagedDestination(t *testing.T) {
 	directory := t.TempDir()
 	name := filepath.Join(directory, "manifest.yaml")
 	require.NoError(t, os.WriteFile(name, []byte("existing\n"), 0o600))
-	err := writeFiles(context.Background(), directory,
+	_, err := writeFiles(context.Background(), directory,
 		[]SerializedFile{{Path: "manifest.yaml", Data: []byte("replacement\n")}}, writeOptions{})
 	require.ErrorContains(t, err, "not a managed manifest")
 	data, err := os.ReadFile(name)
@@ -299,7 +300,7 @@ func TestWriteFiles_CancellationDoesNotCreateOutput(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	directory := filepath.Join(t.TempDir(), "export")
-	err := writeFiles(ctx, directory, []SerializedFile{{Path: "manifest.yaml"}}, writeOptions{})
+	_, err := writeFiles(ctx, directory, []SerializedFile{{Path: "manifest.yaml"}}, writeOptions{})
 	require.ErrorIs(t, err, context.Canceled)
 	assert.NoDirExists(t, directory)
 }
@@ -371,7 +372,9 @@ func TestWriteFiles_SynchronizesOnlyLayoutManagedManifests(t *testing.T) {
 	require.NoError(t, err)
 	component.Object.(map[string]any)["spec"].(map[string]any)["parameters"] = map[string]any{"replicas": 3}
 	current := serializedResources(t, component, project, manifestResource("Environment"))
-	require.NoError(t, writeFiles(context.Background(), directory, current, writeOptions{}))
+	counts, err := writeFiles(context.Background(), directory, current, writeOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, FileCounts{Created: 1, Updated: 1, Unchanged: 1, Deleted: 1}, counts)
 	for _, file := range append(current, unrelated...) {
 		data, err := os.ReadFile(filepath.Join(directory, filepath.FromSlash(file.Path)))
 		require.NoError(t, err)
@@ -422,12 +425,13 @@ func TestWriteFiles_RollsBackCreatesUpdatesDeletesAndDirectories(t *testing.T) {
 	component.Object.(map[string]any)["spec"].(map[string]any)["parameters"] = map[string]any{"replicas": 5}
 	files := serializedResources(t, component, manifestResource("Environment"))
 	wantErr := errors.New("cannot save source binding")
-	err := writeFiles(context.Background(), directory, files, writeOptions{commit: func() error {
+	counts, err := writeFiles(context.Background(), directory, files, writeOptions{commit: func() error {
 		assert.FileExists(t, filepath.Join(directory, filepath.FromSlash("namespaces/acme/platform/infra/environments/sample.yaml")))
 		assert.NoDirExists(t, filepath.Join(directory, filepath.FromSlash("namespaces/acme/projects/store/components/backend")))
 		return wantErr
 	}})
 	require.ErrorIs(t, err, wantErr)
+	assert.Equal(t, FileCounts{}, counts)
 	require.ErrorContains(t, err, "previous files restored")
 	assert.Equal(t, before, snapshotTree(t, directory))
 }
@@ -460,7 +464,7 @@ func TestFileTransaction_RollsBackMidApplyFailure(t *testing.T) {
 func TestWriteFiles_FailedExportRemovesNewOutputAncestors(t *testing.T) {
 	parent := t.TempDir()
 	directory := filepath.Join(parent, "new", "nested")
-	err := writeFiles(context.Background(), directory, serializedResources(t, manifestResource("Project")),
+	_, err := writeFiles(context.Background(), directory, serializedResources(t, manifestResource("Project")),
 		writeOptions{commit: func() error { return errors.New("commit failed") }})
 	require.ErrorContains(t, err, "previous files restored")
 	assert.NoDirExists(t, filepath.Join(parent, "new"))
@@ -483,7 +487,7 @@ func TestWriteFiles_EmptyExportRequiresExplicitConfirmation(t *testing.T) {
 					return answer == "accept", nil
 				}
 			}
-			err := writeFiles(context.Background(), directory, nil, options)
+			_, err := writeFiles(context.Background(), directory, nil, options)
 			if answer == "accept" {
 				require.NoError(t, err)
 				assert.NoDirExists(t, filepath.Join(directory, "namespaces"))
