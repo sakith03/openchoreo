@@ -4,9 +4,14 @@
 package export
 
 import (
+	"bufio"
 	"fmt"
+	"io"
+	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/openchoreo/openchoreo/internal/occ/auth"
 	"github.com/openchoreo/openchoreo/internal/occ/resources/client"
@@ -20,13 +25,17 @@ func NewExportCmd(f client.NewClientFunc) *cobra.Command {
 		Short: "Export OpenChoreo configuration as a GitOps directory tree",
 		Long: `Fetch supported cluster-scoped configuration and resources from every
 accessible OpenChoreo control-plane namespace and write one YAML manifest per
-resource beneath the output directory. Missing directories are created;
-existing destination files are never overwritten.
+resource beneath the output directory. Missing directories are created.
+Supported manifests whose identity matches the export layout are managed:
+identical files are skipped, changed files are replaced, and stale files are
+deleted. Other files are preserved. Local edits to managed files are replaced.
+File-operation failures trigger rollback to the previous contents.
 
 Objects marked for deletion are skipped. Manifests omit top-level status,
 server metadata, the last-applied-configuration annotation, and the OpenChoreo
 restart annotation. Specs and other labels and annotations are preserved.
-Redaction and canonicalization are not yet implemented.`,
+The destination is bound to its API server in the existing OCC configuration.
+An empty export that would delete managed files requires terminal confirmation.`,
 		Example: `  occ export -o ./gitops-export
   occ export --output /path/to/gitops-repository
   occ export -o .`,
@@ -42,6 +51,13 @@ Redaction and canonicalization are not yet implemented.`,
 			if err != nil {
 				return err
 			}
+			params.ConfirmEmpty = func(count int) (bool, error) {
+				input, ok := cmd.InOrStdin().(*os.File)
+				if !ok || !term.IsTerminal(int(input.Fd())) {
+					return false, fmt.Errorf("empty export would delete %d managed manifests; rerun in a terminal to confirm", count)
+				}
+				return readEmptyConfirmation(input, cmd.ErrOrStderr(), count)
+			}
 			files, err := Run(cmd.Context(), c, params)
 			if err != nil {
 				return err
@@ -53,4 +69,16 @@ Redaction and canonicalization are not yet implemented.`,
 	cmd.Flags().StringVarP(&params.OutputDir, "output", "o", "", "Directory for exported YAML manifests (required)")
 	_ = cmd.MarkFlagRequired("output")
 	return cmd
+}
+
+func readEmptyConfirmation(input io.Reader, output io.Writer, count int) (bool, error) {
+	if _, err := fmt.Fprintf(output, "The cluster export is empty. Delete %d managed manifests? [y/N]: ", count); err != nil {
+		return false, err
+	}
+	line, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil {
+		return false, fmt.Errorf("read empty-export confirmation: %w", err)
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes", nil
 }

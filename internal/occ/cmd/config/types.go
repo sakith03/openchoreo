@@ -9,6 +9,8 @@ type StoredConfig struct {
 	ControlPlanes  []ControlPlane `yaml:"controlplanes"`
 	Credentials    []Credential   `yaml:"credentials,omitempty"`
 	Contexts       []Context      `yaml:"contexts"`
+	// ExportBindings associates canonical output directories with API servers.
+	ExportBindings map[string]string `yaml:"exportBindings,omitempty"`
 }
 
 // ControlPlane defines OpenChoreo API server configuration
