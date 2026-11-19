@@ -13,6 +13,9 @@ import (
 // Params specifies the destination of the export directory tree.
 type Params struct {
 	OutputDir string
+	// AllReleases includes the complete release history instead of the default
+	// three-month window plus releases referenced by exported bindings.
+	AllReleases bool
 	// ConfirmEmpty is called only when an empty export would remove managed files.
 	// A nil callback refuses that deletion, including in unattended callers.
 	ConfirmEmpty func(int) (bool, error)
