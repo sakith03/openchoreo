@@ -79,13 +79,15 @@ var requiredNamespacedCollections = []collectionFixture{
 }
 
 type fetchFixture struct {
-	t           *testing.T
-	client      *client.Client
-	collections map[string]collectionFixture
-	calls       map[string][]string
-	paginated   bool
-	empty       bool
-	override    testutil.RoundTripFunc
+	t               *testing.T
+	client          *client.Client
+	collections     map[string]collectionFixture
+	calls           map[string][]string
+	paginated       bool
+	empty           bool
+	override        testutil.RoundTripFunc
+	profileOverride testutil.RoundTripFunc
+	profileCalls    int
 }
 
 func newFetchFixture(t *testing.T, paginated bool) *fetchFixture {
@@ -131,6 +133,14 @@ func (f *fetchFixture) roundTrip(req *http.Request) (*http.Response, error) {
 	assert.Equal(f.t, http.MethodGet, req.Method)
 	assert.Equal(f.t, "api.example.test", req.URL.Host)
 	assert.Equal(f.t, "Bearer "+testutil.NonExpiredJWT, req.Header.Get("Authorization"))
+	if req.URL.Path == "/api/v1/authz/profile" {
+		f.profileCalls++
+		assert.Empty(f.t, req.URL.RawQuery, "export must request an unscoped authorization profile")
+		if f.profileOverride != nil {
+			return f.profileOverride(req)
+		}
+		return testutil.JSONResp(http.StatusOK, fullExportProfile()), nil
+	}
 	query := req.URL.Query()
 	for key := range query {
 		assert.Contains(f.t, []string{"limit", "cursor"}, key, "unexpected selector on %s", req.URL.Path)
@@ -174,6 +184,18 @@ func (f *fetchFixture) roundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 	return testutil.JSONResp(http.StatusOK, map[string]any{"items": items, "pagination": pagination}), nil
+}
+
+func fullExportProfile() gen.UserCapabilitiesResponse {
+	wildcard := "*"
+	capabilities := make(map[string]gen.ActionCapability)
+	collections := append([]collectionFixture{{kind: testNamespaceKind}}, requiredClusterCollections...)
+	collections = append(collections, requiredNamespacedCollections...)
+	for _, collection := range collections {
+		allowed := []gen.CapabilityResource{{Path: &wildcard}}
+		capabilities[strings.ToLower(collection.kind)+":view"] = gen.ActionCapability{Allowed: &allowed}
+	}
+	return gen.UserCapabilitiesResponse{Capabilities: &capabilities}
 }
 
 func fixtureObject(collection collectionFixture, path string, page int) map[string]any {
